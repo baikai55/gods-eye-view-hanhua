@@ -1329,6 +1329,7 @@
       "./standalone/catalog"
     ],
     "modules": [
+      "src/ui/i18n/language.js",
       "src/cyberSonarScene.js",
       "src/cyberSonar.js",
       "src/hudLayouts.js",

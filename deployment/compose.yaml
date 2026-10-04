@@ -1,0 +1,50 @@
+services:
+  gods-eye-view:
+    image: gods-eye-view:88b8406-cf-i18n
+    container_name: gods-eye-view
+    build:
+      context: ./source
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+        CESIUM_ION_TOKEN: ${CESIUM_ION_TOKEN:-}
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 127.0.0.1
+      PORT: "4174"
+      GEV_PORT: "4173"
+      GEV_UPSTREAM_PORT: "4174"
+      GEV_PUBLIC_ORIGINS: https://map.yueming.uk
+      GEV_ALLOWED_HOSTS: map.yueming.uk
+      OPENSKY_AUTH_MODE: ${OPENSKY_AUTH_MODE:-anon}
+      NODE_OPTIONS: --max-old-space-size=1536
+    ports:
+      - 127.0.0.1:4173:4173
+    networks:
+      - default
+      - cpa
+    volumes:
+      - ./cache:/app/.gev-cache
+      - ./logs:/app/.gev-logs
+    restart: unless-stopped
+    init: true
+    mem_limit: 2g
+    mem_reservation: 256m
+    cpus: "1.0"
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  cpa:
+    external: true
+    name: cpa-manager-plus_default

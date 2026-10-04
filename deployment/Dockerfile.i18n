@@ -1,0 +1,29 @@
+# Reuse the deployed ARM64 dependency layer for this server update.
+FROM gods-eye-view:88b8406-cf-before-i18n AS build
+COPY --chown=node:node src/main.js /app/src/main.js
+COPY --chown=node:node src/hud.js /app/src/hud.js
+COPY --chown=node:node src/hudSummaryRevision.test.mjs /app/src/hudSummaryRevision.test.mjs
+COPY --chown=node:node src/ui/i18n /app/src/ui/i18n
+COPY --chown=node:node server/providers/openai/hud-summary.js /app/server/providers/openai/hud-summary.js
+COPY --chown=node:node server/providers/openai/hud-summary.test.mjs /app/server/providers/openai/hud-summary.test.mjs
+COPY --chown=node:node scripts/package-boundaries.json /app/scripts/package-boundaries.json
+COPY --chown=node:node .env.example /app/.env.example
+COPY --chown=node:node deployment/LOCAL-CHANGES.md /app/deployment/LOCAL-CHANGES.md
+COPY --chown=node:node deployment/pinokio-environment.fixture /app/pinokio/_ENVIRONMENT
+USER root
+RUN node --test src/ui/i18n/language.test.mjs src/ui/i18n/runtime.test.mjs src/hudSummaryRevision.test.mjs server/providers/openai/hud-summary.test.mjs src/hudSummaryResponse.test.mjs src/costEndpointThrottle.test.mjs src/hudAltitudeDatum.test.mjs deployment/gateway.test.mjs
+# Vite reads the existing server environment only during this build step.
+# BuildKit keeps the server-only provider keys out of copied files and layers.
+RUN --mount=type=secret,id=gev-build-env,target=/app/.env,required=true npm run build
+
+FROM gods-eye-view:88b8406-cf-before-i18n
+COPY --from=build --chown=node:node /app/dist /app/dist
+COPY --from=build --chown=node:node /app/src/main.js /app/src/main.js
+COPY --from=build --chown=node:node /app/src/hud.js /app/src/hud.js
+COPY --from=build --chown=node:node /app/src/hudSummaryRevision.test.mjs /app/src/hudSummaryRevision.test.mjs
+COPY --from=build --chown=node:node /app/src/ui/i18n /app/src/ui/i18n
+COPY --from=build --chown=node:node /app/server/providers/openai/hud-summary.js /app/server/providers/openai/hud-summary.js
+COPY --from=build --chown=node:node /app/server/providers/openai/hud-summary.test.mjs /app/server/providers/openai/hud-summary.test.mjs
+COPY --from=build --chown=node:node /app/scripts/package-boundaries.json /app/scripts/package-boundaries.json
+COPY --from=build --chown=node:node /app/.env.example /app/.env.example
+COPY --from=build --chown=node:node /app/deployment/LOCAL-CHANGES.md /app/deployment/LOCAL-CHANGES.md

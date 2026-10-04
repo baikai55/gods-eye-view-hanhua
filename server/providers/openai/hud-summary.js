@@ -6,9 +6,21 @@ import { enforceRateLimit, openAiRateLimiter } from './rate-limit.js';
 import { readRequestBody } from '../common/request.js';
 import { OPENAI_HUD_SUMMARY_MODEL_DEFAULT } from './constants.js';
 
+const CHINESE_HUD_SUMMARY_INSTRUCTIONS = [
+  "为 God's Eye View 的当前地图视野生成一句简短摘要。",
+  '只使用提供的地名、街道、附近地点、已开启图层和 feedProvenance，不推测或编造事件。',
+  '优先使用最明确的地名，必要时提及相关图层。',
+  '如果已开启图层的状态不是 nominal，必须原样包含相应的大写英文状态标识：STALE、DEGRADED、FALLBACK、LOADING 或 UNAVAILABLE，不得描述为实时正常。',
+  '只输出一行简体中文摘要，不超过24个字，不加标题、解释、标点或 Markdown。',
+].join(' ');
+
 function extractOpenAiResponseText(data) {
   if (typeof data?.output_text === 'string' && data.output_text.trim()) {
     return data.output_text.trim();
+  }
+  const chatContent = data?.choices?.[0]?.message?.content;
+  if (typeof chatContent === 'string' && chatContent.trim()) {
+    return chatContent.trim();
   }
   if (!Array.isArray(data?.output)) return '';
   return data.output
@@ -18,14 +30,15 @@ function extractOpenAiResponseText(data) {
     .trim();
 }
 
-function toFiveWordHudSummary(value) {
-  return String(value || '')
+function toHudSummary(value, language) {
+  const text = String(value || '')
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 5)
-    .join(' ');
+    .replace(/\s+/g, ' ');
+  // Chinese words do not use spaces. Keep a short Unicode-safe line instead
+  // of applying the original five-space-separated-word limit.
+  if (language === 'zh-CN') return Array.from(text).slice(0, 40).join('');
+  return text.split(/\s+/).filter(Boolean).slice(0, 5).join(' ');
 }
 
 async function handleHudSummary(req, res) {
@@ -36,7 +49,9 @@ async function handleHudSummary(req, res) {
     return;
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey =
+    process.env.OPENAI_HUD_SUMMARY_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY;
   const keyless = keylessHudSummaryResponse(apiKey);
   if (keyless) {
     res.statusCode = keyless.statusCode;
@@ -54,25 +69,76 @@ async function handleHudSummary(req, res) {
   try {
     const body = await readRequestBody(req, 64 * 1024);
     const context = JSON.parse(body || '{}');
-    const response = await fetch('https://api.openai.com/v1/responses', {
+    const format = process.env.OPENAI_HUD_SUMMARY_API_FORMAT || 'responses';
+    if (!['responses', 'chat-completions'].includes(format)) {
+      throw new Error('Unsupported HUD summary API format');
+    }
+    const base = new URL(
+      process.env.OPENAI_HUD_SUMMARY_BASE_URL || 'https://api.openai.com/v1',
+    );
+    if (
+      !['http:', 'https:'].includes(base.protocol) ||
+      base.username ||
+      base.password ||
+      base.search ||
+      base.hash
+    ) {
+      throw new Error('Invalid HUD summary API base URL');
+    }
+    const endpoint = `${base.href.replace(/\/+$/, '')}/${format === 'chat-completions' ? 'chat/completions' : 'responses'}`;
+    // A validated browser preference overrides the deployment's default.
+    const language = ['en', 'zh-CN'].includes(context.language)
+      ? context.language
+      : process.env.OPENAI_HUD_SUMMARY_LANGUAGE;
+    const instructions =
+      language === 'zh-CN'
+        ? CHINESE_HUD_SUMMARY_INSTRUCTIONS
+        : HUD_SUMMARY_INSTRUCTIONS;
+    const model =
+      process.env.OPENAI_HUD_SUMMARY_MODEL || OPENAI_HUD_SUMMARY_MODEL_DEFAULT;
+    const effort =
+      process.env.OPENAI_HUD_SUMMARY_REASONING_EFFORT ||
+      (format === 'chat-completions' ? 'none' : 'minimal');
+    const payload =
+      format === 'chat-completions'
+        ? {
+            model,
+            messages: [
+              { role: 'system', content: instructions },
+              { role: 'user', content: JSON.stringify(context) },
+            ],
+            reasoning_effort: effort,
+            max_tokens: 120,
+            stream: false,
+          }
+        : {
+            model,
+            instructions,
+            input: JSON.stringify(context),
+            reasoning: { effort },
+            max_output_tokens: 100,
+          };
+    const response = await fetch(endpoint, {
       method: 'POST',
+      redirect: 'error',
+      // The HUD gives a request five seconds. Stop upstream work first so a
+      // slow provider cannot keep running after the browser has fallen back.
+      signal: AbortSignal.timeout(4500),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model:
-          process.env.OPENAI_HUD_SUMMARY_MODEL ||
-          OPENAI_HUD_SUMMARY_MODEL_DEFAULT,
-        instructions: HUD_SUMMARY_INSTRUCTIONS,
-        input: JSON.stringify(context),
-        reasoning: { effort: 'minimal' },
-        max_output_tokens: 100,
-      }),
+      body: JSON.stringify(payload),
     });
     const data = await response.json().catch(() => ({}));
-    const summary = toFiveWordHudSummary(extractOpenAiResponseText(data));
-    res.statusCode = response.ok && summary ? 200 : response.status || 502;
+    const summary = response.ok
+      ? toHudSummary(extractOpenAiResponseText(data), language)
+      : '';
+    res.statusCode = response.ok
+      ? summary
+        ? 200
+        : 502
+      : response.status || 502;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     if (!response.ok)
@@ -82,7 +148,8 @@ async function handleHudSummary(req, res) {
         summary: summary || null,
         // Never relay `data.error.message`: that is OpenAI's own wording, and
         // it carries request ids, organization hints and quota phrasing.
-        error: response.ok ? null : 'OpenAI HUD summary request failed',
+        error:
+          response.ok && summary ? null : 'OpenAI HUD summary request failed',
       }),
     );
   } catch {

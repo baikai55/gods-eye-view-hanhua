@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+dist
+.gev-cache
+.gev-logs
+docs/media
+scripts/fixtures
+*.tar.gz
+pinokio

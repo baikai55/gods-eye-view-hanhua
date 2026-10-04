@@ -1,0 +1,9 @@
+FROM gods-eye-view:88b8406-cf-before-glm-summary AS checked
+COPY --chown=node:node server/providers/openai/hud-summary.js /app/server/providers/openai/hud-summary.js
+COPY --chown=node:node server/providers/openai/hud-summary.test.mjs /app/server/providers/openai/hud-summary.test.mjs
+COPY --chown=node:node deployment/pinokio-environment.fixture /app/pinokio/_ENVIRONMENT
+RUN node --test server/providers/openai/hud-summary.test.mjs src/hudSummaryResponse.test.mjs src/costEndpointThrottle.test.mjs deployment/gateway.test.mjs
+
+FROM gods-eye-view:88b8406-cf-before-glm-summary
+COPY --from=checked --chown=node:node /app/server/providers/openai/hud-summary.js /app/server/providers/openai/hud-summary.js
+COPY --from=checked --chown=node:node /app/server/providers/openai/hud-summary.test.mjs /app/server/providers/openai/hud-summary.test.mjs

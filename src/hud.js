@@ -1,4 +1,5 @@
 import { applicationServices } from './services/application.js';
+import { getUiLanguage } from './ui/i18n/language.js';
 /**
  * @module hud
  * @description Intelligence HUD Overlay — NRO/NGA Satellite Aesthetic.
@@ -127,6 +128,18 @@ export class IntelHUD {
     this._summaryRequest = null;
     this._lastSummarySignature = '';
     this._summaryRevision = 0;
+    this._onLanguageChange = () => {
+      this._markSummaryDirty();
+      this._summaryRequest?.abort();
+      this._summaryRequest = null;
+      clearInterval(this._summaryTypingInterval);
+      this._lastSummarySignature = '';
+      if (this._visible) void this._updateSummary(false, true);
+    };
+    globalThis.window?.addEventListener?.(
+      'gev:language-change',
+      this._onLanguageChange,
+    );
     // One-shot guards so the very first summary lands immediately instead of
     // waiting for the 15s interval tick: B) swap the "Awaiting telemetry..."
     // placeholder for the deterministic line as soon as metrics exist, then
@@ -714,6 +727,7 @@ export class IntelHUD {
     try {
       context = await this._summaryContext();
     } catch (error) {
+      if (revision !== this._summaryRevision) return;
       console.warn('[HUD] summary context unavailable:', error);
       // Left dirty on purpose: the next periodic tick retries instead of
       // sticking on the fallback line for the rest of the session.
@@ -755,6 +769,7 @@ export class IntelHUD {
         animate,
       );
     } catch (error) {
+      if (revision !== this._summaryRevision) return;
       if (error?.name !== 'AbortError') {
         console.warn('[HUD] AI summary unavailable:', error);
         // Invalidate the committed signature so the next periodic tick
@@ -790,6 +805,7 @@ export class IntelHUD {
         ?.filter((layer) => layer.enabled)
         .map((layer) => layer.name) || [];
     return {
+      language: getUiLanguage(),
       placeLabels: labels.placeLabels,
       streetLabels: labels.streetLabels,
       nearbyPlaceLabels: labels.nearbyPlaceLabels,
@@ -944,6 +960,10 @@ export class IntelHUD {
     clearInterval(this._summaryInterval);
     clearInterval(this._summaryTypingInterval);
     this.viewer.camera.moveEnd.removeEventListener(this._onCameraMoveEnd);
+    globalThis.window?.removeEventListener?.(
+      'gev:language-change',
+      this._onLanguageChange,
+    );
     this._dataManagerUnsubscribe?.();
     this._summaryRequest?.abort();
   }
